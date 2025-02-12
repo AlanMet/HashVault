@@ -15,6 +15,9 @@ This Flutter-based password manager provides a secure way to store and manage pa
   - **Red**: Password has been unchanged for a very long time.
 - **Quick Access**: A button to open the associated website directly from the app.
 
+## Flowchart
+Check out our [Flowchart](flowchart.md) for an overview of the application's logic.
+
 ## Installation
 1. Clone the repository:
    ```sh
