@@ -3,7 +3,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'setup_screen.dart';
 import 'login_screen.dart';
 
-// give me the front and backend code. it needs to check if the file with
+//it needs to check if the file with
 //the passwords exists and also maybe a backup. The front end will have a
 //simple password prompt. the hash should be encrypted in its own file. when
 //the user types the password then the hashes are compared, if the password is
@@ -42,44 +42,39 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   final FlutterSecureStorage _storage = FlutterSecureStorage();
 
-  Future<void> _resetConfiguration() async {
-    await _storage.write(key: 'configured', value: 'false');
-    print('Configuration reset to false');
+  void _setConfig(bool config) async {
+    await _storage.write(key: 'config', value: config.toString());
+    _checkConfig();
   }
 
-  void _setConfigured() async {
-    final FlutterSecureStorage _storage = FlutterSecureStorage();
-    await _storage.write(
-        key: 'configured', value: 'true'); // Mark as configured
-    print('Configuration complete');
-    _checkConfiguration();
+  Future<bool> _getConfig() async {
+    String? configured = await _storage.read(key: 'config');
+    if (configured == null) {
+      return false;
+    }
+    return configured == 'true';
   }
 
   @override
   void initState() {
     super.initState();
-    _resetConfiguration();
-    _checkConfiguration();
+    _setConfig(false);
   }
 
-  Future<void> _checkConfiguration() async {
-    String? configured = await _storage.read(key: 'configured');
-
-    if (configured == 'true') {
-      print('configuration found, redirecting to login');
+  Future<void> _checkConfig() async {
+    bool? configured = await _getConfig();
+    if (configured) {
       Navigator.pushReplacement(
         context,
         MaterialPageRoute(builder: (context) => const LoginScreen()),
       );
     } else {
-      print('No configuration found, redirecting to setup');
       Navigator.push(
         context,
         MaterialPageRoute(
-          builder: (context) => SetupScreen(
-            onSetupComplete: _setConfigured, // Pass the callback here
-          ),
-        ),
+            builder: (context) => SetupScreen(
+                  onConfigured: (value) => _setConfig(value),
+                )),
       );
     }
   }

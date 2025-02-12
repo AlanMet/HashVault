@@ -2,132 +2,207 @@ import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 class SetupScreen extends StatefulWidget {
-  final Function onSetupComplete; // Define the callback function
+  final void Function(bool) onConfigured;
 
-  const SetupScreen({super.key, required this.onSetupComplete});
+  const SetupScreen({super.key, required this.onConfigured});
 
   @override
   State<SetupScreen> createState() => _SetupScreenState();
 }
 
 class _SetupScreenState extends State<SetupScreen> {
-  int _currentStep = 0; // Move _currentStep here to persist its value
-  TextEditingController _masterPasswordController = TextEditingController();
-  TextEditingController _confirmPasswordController = TextEditingController();
-  String? _selectedEncryptionMethod;
+  int _currentStep = 0;
 
-  final FlutterSecureStorage _storage = FlutterSecureStorage();
+  // Variables to hold user input for encryption, hashing, and password
+  String? selectedEncryption = 'AES'; // Default encryption method
+  String? selectedHashingAlgorithm = 'SHA-256'; // Default hashing algorithm
+  String password = '';
+  String confirmPassword = '';
+  String? passwordError;
+
+  // List of options for encryption and hashing methods
+  final List<String> encryptionMethods = ['AES', 'RSA', 'DES'];
+  final List<String> hashingAlgorithms = ['SHA-256', 'MD5', 'SHA-1'];
+
+  // Password validation regex function
+  String? validatePassword(String value) {
+    RegExp regex =
+        RegExp(r'^(?=.*?[A-Z])(?=.*?[a-z])(?=.*?[0-9])(?=.*?[!@#\$&*~]).{8,}$');
+    if (value.isEmpty) {
+      return 'Please enter a password';
+    } else {
+      if (!regex.hasMatch(value)) {
+        return 'Password must be at least 8 characters, with an uppercase letter, a lowercase letter, a number, and a special character';
+      } else {
+        return null;
+      }
+    }
+  }
+
+  List<Step> getSteps() {
+    return [
+      Step(
+        title: const Text("Encryption Method"),
+        content: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            DropdownButton<String>(
+              value: selectedEncryption,
+              items: encryptionMethods.map((String method) {
+                return DropdownMenuItem<String>(
+                  value: method,
+                  child: Text(method),
+                );
+              }).toList(),
+              onChanged: (value) {
+                setState(() {
+                  selectedEncryption = value;
+                });
+              },
+            ),
+          ],
+        ),
+        isActive: _currentStep >= 0,
+      ),
+      Step(
+        title: const Text("Hashing Algorithm"),
+        content: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            DropdownButton<String>(
+              value: selectedHashingAlgorithm,
+              items: hashingAlgorithms.map((String algorithm) {
+                return DropdownMenuItem<String>(
+                  value: algorithm,
+                  child: Text(algorithm),
+                );
+              }).toList(),
+              onChanged: (value) {
+                setState(() {
+                  selectedHashingAlgorithm = value;
+                });
+              },
+            ),
+          ],
+        ),
+        isActive: _currentStep >= 1,
+      ),
+      Step(
+        title: const Text("Password"),
+        content: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            TextField(
+              obscureText: true,
+              onChanged: (value) {
+                setState(() {
+                  password = value;
+                  passwordError =
+                      validatePassword(value); // Validate password on change
+                });
+              },
+              decoration: InputDecoration(
+                labelText: "Enter your password",
+                errorText: passwordError,
+              ),
+            ),
+          ],
+        ),
+        isActive: _currentStep >= 2,
+      ),
+      Step(
+        title: const Text("Confirm Password"),
+        content: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            TextField(
+              obscureText: true,
+              onChanged: (value) {
+                setState(() {
+                  confirmPassword = value;
+                });
+              },
+              decoration:
+                  const InputDecoration(labelText: "Confirm your password"),
+            ),
+            if (password.isNotEmpty &&
+                confirmPassword.isNotEmpty &&
+                password != confirmPassword)
+              const Padding(
+                padding: EdgeInsets.only(top: 8.0),
+                child: Text(
+                  "Passwords do not match.",
+                  style: TextStyle(color: Colors.red),
+                ),
+              ),
+          ],
+        ),
+        isActive: _currentStep >= 3,
+      ),
+    ];
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Setup Your Password Manager')),
+      appBar: AppBar(title: const Text("Setup Screen")),
       body: Stepper(
         currentStep: _currentStep,
-        onStepContinue: () {
+        onStepTapped: (step) {
           setState(() {
-            if (_currentStep < 4) {
-              _currentStep++;
-            } else {
-              widget.onSetupComplete(); // Mark as configured
-              Navigator.pop(context); // Go back to the main screen
-            }
+            _currentStep = step;
           });
+        },
+        onStepContinue: () {
+          if (_currentStep == 2) {
+            // Validate password only when the user is on step 2 (Password step)
+            setState(() {
+              passwordError =
+                  validatePassword(password); // Re-validate password
+            });
+
+            if (passwordError == null) {
+              setState(() {
+                _currentStep++;
+              });
+            } else {
+              // Show a snack bar with the error
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Invalid password')),
+              );
+            }
+          } else if (_currentStep == 3) {
+            // Only proceed to step 4 if passwords match
+            if (password == confirmPassword) {
+              setState(() {
+                _currentStep++;
+              });
+            } else {
+              // Show a snack bar with the error
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Passwords do not match')),
+              );
+            }
+          } else if (_currentStep == getSteps().length - 1) {
+            // At the last step, don't increment _currentStep anymore
+            widget.onConfigured(true); // Call the callback to notify completion
+          } else {
+            // Proceed to the next step if we're not on the password steps
+            if (_currentStep < getSteps().length - 1) {
+              setState(() {
+                _currentStep++;
+              });
+            }
+          }
         },
         onStepCancel: () {
-          setState(() {
-            if (_currentStep > 0) {
+          if (_currentStep > 0) {
+            setState(() {
               _currentStep--;
-            }
-          });
+            });
+          }
         },
-        steps: [
-          Step(
-            title: const Text('Welcome'),
-            content: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: const [
-                Text('Welcome to the Password Manager setup wizard!'),
-                Text('Please follow the steps to configure your app.'),
-              ],
-            ),
-            isActive: _currentStep >= 0,
-            state: _currentStep == 0 ? StepState.editing : StepState.complete,
-          ),
-          Step(
-            title: const Text('Encryption Method'),
-            content: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text('Choose your encryption method:'),
-                DropdownButton<String>(
-                  value: _selectedEncryptionMethod,
-                  items: const <String>['AES-256', 'RSA-2048']
-                      .map((e) => DropdownMenuItem(value: e, child: Text(e)))
-                      .toList(),
-                  onChanged: (value) {
-                    setState(() {
-                      _selectedEncryptionMethod = value;
-                    });
-                  },
-                  hint: const Text('Select Encryption Method'),
-                ),
-              ],
-            ),
-            isActive: _currentStep >= 1,
-            state: _currentStep == 1 ? StepState.editing : StepState.complete,
-          ),
-          Step(
-            title: const Text('Set Master Password'),
-            content: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                TextField(
-                  controller: _masterPasswordController,
-                  obscureText: true,
-                  decoration:
-                      const InputDecoration(labelText: "Master Password"),
-                ),
-              ],
-            ),
-            isActive: _currentStep >= 2,
-            state: _currentStep == 2 ? StepState.editing : StepState.complete,
-          ),
-          Step(
-            title: const Text('Confirm Password'),
-            content: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                TextField(
-                  controller: _confirmPasswordController,
-                  obscureText: true,
-                  decoration:
-                      const InputDecoration(labelText: "Confirm Password"),
-                ),
-              ],
-            ),
-            isActive: _currentStep >= 3,
-            state: _currentStep == 3 ? StepState.editing : StepState.complete,
-          ),
-          Step(
-            title: const Text('Backup Encryption'),
-            content: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text('Would you like to set a backup encryption method?'),
-                SwitchListTile(
-                  title: const Text('Enable Backup Encryption'),
-                  value: false,
-                  onChanged: (value) {
-                    // Handle backup encryption logic
-                  },
-                ),
-              ],
-            ),
-            isActive: _currentStep >= 4,
-            state: _currentStep == 4 ? StepState.editing : StepState.complete,
-          ),
-        ],
+        steps: getSteps(),
       ),
     );
   }
