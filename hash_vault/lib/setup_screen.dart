@@ -307,12 +307,13 @@ class _SetupScreenState extends State<SetupScreen> {
       body: Container(
         width: effectiveWidth,
         height: effectiveHeight,
-        decoration: BoxDecoration(
-          image: DecorationImage(
-            image: AssetImage('assets/one.gif'),
-            fit: BoxFit.cover,
-          ),
-        ),
+        color: const Color(0xFF424242).withAlpha((1 * 255).toInt()),
+        // decoration: BoxDecoration(
+        //   image: DecorationImage(
+        //     image: AssetImage('assets/one.gif'),
+        //     fit: BoxFit.cover,
+        //   ),
+        // ),
         child: Center(
           child: SingleChildScrollView(
             padding: EdgeInsets.all(24 * scale),
@@ -323,10 +324,20 @@ class _SetupScreenState extends State<SetupScreen> {
                 color: const Color(0xFF424242).withAlpha((0.95 * 255).toInt()),
                 borderRadius: BorderRadius.circular(16 * scale),
                 boxShadow: [
+                  // Light shadow for top-left
                   BoxShadow(
-                      color: Colors.black.withAlpha((0.8 * 255).toInt()),
-                      offset: Offset(0, 4 * scale),
-                      blurRadius: 12 * scale),
+                    color: const Color.fromARGB(255, 139, 139,
+                        139), // Soft white shadow with some opacity
+                    offset: Offset(-5 * scale, -5 * scale), // Top-left offset
+                    blurRadius: 9 * scale, // Soft blur
+                  ),
+                  // Dark shadow for bottom-right
+                  BoxShadow(
+                    color: const Color.fromARGB(
+                        255, 49, 49, 49), // Darker shadow with transparency
+                    offset: Offset(5 * scale, 5 * scale), // Bottom-right offset
+                    blurRadius: 9 * scale, // Soft blur
+                  ),
                 ],
               ),
               child: Column(

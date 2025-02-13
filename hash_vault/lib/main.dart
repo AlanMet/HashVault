@@ -59,7 +59,7 @@ class _HomePageState extends State<HomePage> {
   @override
   void initState() {
     super.initState();
-    _setConfig(false);
+    //_setConfig(false);
   }
 
   Future<void> _checkConfig() async {
@@ -82,6 +82,8 @@ class _HomePageState extends State<HomePage> {
 
   @override
   Widget build(BuildContext context) {
+    _checkConfig();
+
     return Scaffold(
       appBar: AppBar(title: const Text('Hash Vault')),
       body: const Center(child: CircularProgressIndicator()),
