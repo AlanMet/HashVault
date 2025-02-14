@@ -26,6 +26,28 @@ class _LoginScreenState extends State<LoginScreen> {
 
   final FlutterSecureStorage _storage = FlutterSecureStorage();
 
+  @override
+  void initState() {
+    super.initState();
+    _validateConfig();
+  }
+
+  /// Validates if the configuration files exist and are correct.
+  Future<void> _validateConfig() async {
+    final keyFile = File('assets/key.bin');
+    final vaultFile = File('assets/vault.bin');
+
+    if (!await keyFile.exists() || !await vaultFile.exists()) {
+      returnToMain();
+    }
+  }
+
+  /// Returns to the main screen and resets the config.
+  void returnToMain() async {
+    await _storage.write(key: 'config', value: 'false');
+    Navigator.pushReplacementNamed(context, '/');
+  }
+
   /// Validates the entered password.
   String? validatePassword(String value) {
     if (value.isEmpty) return 'Please enter a password';
@@ -34,6 +56,13 @@ class _LoginScreenState extends State<LoginScreen> {
 
   /// Handles the login action.
   Future<void> _handleLogin() async {
+    void returnToMain() async {
+      await _storage.write(key: 'config', value: 'false');
+
+      // Return to the main screen (assuming it handles setup when config is false)
+      Navigator.pushReplacementNamed(context, '/');
+    }
+
     if (_isLoading) return;
     setState(() {
       _isLoading = true;
@@ -63,6 +92,7 @@ class _LoginScreenState extends State<LoginScreen> {
             'Configuration not found. Please set up the vault first.';
         _isLoading = false;
       });
+      returnToMain();
       return;
     }
 
@@ -73,6 +103,7 @@ class _LoginScreenState extends State<LoginScreen> {
         passwordError = 'Key file not found.';
         _isLoading = false;
       });
+      returnToMain();
       return;
     }
     final keyFileBytes = await keyFile.readAsBytes();
@@ -81,6 +112,7 @@ class _LoginScreenState extends State<LoginScreen> {
         passwordError = 'Key file is corrupted.';
         _isLoading = false;
       });
+      returnToMain();
       return;
     }
     // Extract IV (first 16 bytes) and encrypted hash.
@@ -103,6 +135,7 @@ class _LoginScreenState extends State<LoginScreen> {
         passwordError = 'Failed to decrypt key file.';
         _isLoading = false;
       });
+      returnToMain();
       return;
     }
 

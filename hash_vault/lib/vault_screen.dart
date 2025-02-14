@@ -53,12 +53,12 @@ class VaultScreen extends StatefulWidget {
   final Uint8List vaultSalt; // extracted from vault.bin
 
   const VaultScreen({
-    Key? key,
+    super.key,
     required this.entries,
     required this.masterPassword,
     required this.vaultFilePath,
     required this.vaultSalt,
-  }) : super(key: key);
+  });
 
   @override
   State<VaultScreen> createState() => _VaultScreenState();
@@ -263,8 +263,7 @@ class PasswordEntryTile extends StatefulWidget {
   final Color Function(DateTime) getEntryColor;
 
   const PasswordEntryTile(
-      {Key? key, required this.entry, required this.getEntryColor})
-      : super(key: key);
+      {super.key, required this.entry, required this.getEntryColor});
 
   @override
   State<PasswordEntryTile> createState() => _PasswordEntryTileState();

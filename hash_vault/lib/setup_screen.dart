@@ -14,7 +14,7 @@ import 'helper.dart'; // Assumes pbkdf2() is defined here.
 class SetupScreen extends StatefulWidget {
   final void Function(bool) onConfigured;
 
-  const SetupScreen({Key? key, required this.onConfigured}) : super(key: key);
+  const SetupScreen({super.key, required this.onConfigured});
 
   @override
   State<SetupScreen> createState() => _SetupScreenState();
