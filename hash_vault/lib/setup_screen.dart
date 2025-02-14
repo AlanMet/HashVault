@@ -2,12 +2,14 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
+
 import 'package:crypto/crypto.dart';
 import 'package:encrypt/encrypt.dart' as encrypt;
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:flutter/services.dart' show rootBundle;
+
+import 'helper.dart'; // Assumes pbkdf2() is defined here.
 
 class SetupScreen extends StatefulWidget {
   final void Function(bool) onConfigured;
@@ -21,20 +23,29 @@ class SetupScreen extends StatefulWidget {
 class _SetupScreenState extends State<SetupScreen> {
   int _currentStep = 0;
 
-  // Configuration values
+  // Configuration values.
   String selectedEncryption = 'AES';
   String selectedHashingAlgorithm = 'SHA-256';
   String password = '';
   String confirmPassword = '';
   String? passwordError;
 
-  // Options for dropdowns
+  // Text controllers for password fields.
+  final TextEditingController _passwordController = TextEditingController();
+  final TextEditingController _confirmPasswordController =
+      TextEditingController();
+
+  // Booleans to toggle password visibility.
+  bool _obscurePassword = true;
+  bool _obscureConfirmPassword = true;
+
+  // Options for dropdowns.
   final List<String> encryptionMethods = ['AES', 'RSA', 'DES'];
   final List<String> hashingAlgorithms = ['SHA-256', 'MD5', 'SHA-1'];
 
-  /// Custom InputDecoration to avoid default purple outlines.
+  /// Custom InputDecoration.
   InputDecoration _inputDecoration(String hint,
-      {String? errorText, required double scale}) {
+      {String? errorText, required double scale, Widget? suffixIcon}) {
     return InputDecoration(
       hintText: hint,
       hintStyle: TextStyle(color: Colors.white38, fontSize: 14 * scale),
@@ -61,6 +72,7 @@ class _SetupScreenState extends State<SetupScreen> {
         borderSide: BorderSide(color: Colors.red.shade700, width: 2 * scale),
       ),
       errorText: errorText,
+      suffixIcon: suffixIcon,
     );
   }
 
@@ -75,7 +87,17 @@ class _SetupScreenState extends State<SetupScreen> {
     return null;
   }
 
+  /// Stores the vault configuration.
   Future<void> _storeConfig() async {
+    final random = Random.secure();
+
+    // --- 1. Generate a random seed for encrypting the hashed password ---
+    final seed = Uint8List(32); // 32 bytes for AES-256.
+    for (int i = 0; i < seed.length; i++) {
+      seed[i] = random.nextInt(256);
+    }
+
+    // --- 2. Compute the hash of the master password ---
     final passwordBytes = utf8.encode(password);
     Digest digest;
     switch (selectedHashingAlgorithm) {
@@ -94,48 +116,66 @@ class _SetupScreenState extends State<SetupScreen> {
     }
     final String hashedPassword = digest.toString();
 
-    // Derive encryption key (AES).
-    final keyBytes = digest.bytes.length == 20
-        ? digest.bytes.sublist(0, 16) // For AES key size
-        : digest.bytes;
-    final key = encrypt.Key(Uint8List.fromList(keyBytes));
-    final iv = encrypt.IV.fromSecureRandom(16); // IV for AES encryption
-    final encrypter =
-        encrypt.Encrypter(encrypt.AES(key, mode: encrypt.AESMode.cbc));
+    // --- 3. Encrypt the hashed password using a key derived from the random seed ---
+    final seedKey = encrypt.Key(seed); // Use seed directly as AES key.
+    final ivKey = encrypt.IV.fromSecureRandom(16);
+    final encrypterKey = encrypt.Encrypter(
+        encrypt.AES(seedKey, mode: encrypt.AESMode.cbc, padding: 'PKCS7'));
+    final encryptedHash = encrypterKey.encrypt(hashedPassword, iv: ivKey);
+    // Create the key file content: [IV (16 bytes)] + [encrypted hash].
+    final Uint8List keyFileData =
+        Uint8List.fromList([...ivKey.bytes, ...encryptedHash.bytes]);
 
-    // Sensitive data (could be passwords, other sensitive config).
-    const String sensitiveData =
-        '[]'; // Example: a placeholder for sensitive data.
+    // --- 4. Prepare the vault data file (password data) ---
+    // Generate a random salt for vault data encryption.
+    final vaultSalt = Uint8List(16);
+    for (int i = 0; i < vaultSalt.length; i++) {
+      vaultSalt[i] = random.nextInt(256);
+    }
+    const int iterations = 10000;
+    const int keyLength = 32; // For AES-256.
+    final vaultKeyBytes = pbkdf2(password, vaultSalt, iterations, keyLength);
+    final vaultKey = encrypt.Key(vaultKeyBytes);
+    // The vault data (initially empty, e.g. an empty array).
+    final vaultContent = {"data": []};
+    final vaultJson = json.encode(vaultContent);
+    final ivVault = encrypt.IV.fromSecureRandom(16);
+    final encrypterVault = encrypt.Encrypter(
+        encrypt.AES(vaultKey, mode: encrypt.AESMode.cbc, padding: 'PKCS7'));
+    final encryptedVault = encrypterVault.encrypt(vaultJson, iv: ivVault);
+    // Create the vault file content: [salt (16 bytes)] + [IV (16 bytes)] + [encrypted vault data].
+    final Uint8List vaultFileData = Uint8List.fromList(
+        [...vaultSalt, ...ivVault.bytes, ...encryptedVault.bytes]);
 
-    // Encrypt the sensitive data.
-    final encryptedContent = encrypter.encrypt(sensitiveData, iv: iv);
+    // --- 5. Save files and configuration ---
+    // (For testing purposes, we're saving to assets folder; adjust paths as needed.)
+    final keyFilePath = 'assets/key.bin';
+    final vaultFilePath = 'assets/vault.bin';
 
-    // Binary data to store: IV and encrypted content.
-    final encryptedData = Uint8List.fromList([
-      ...iv.bytes, // Append IV first
-      ...encryptedContent.bytes, // Append encrypted data
-    ]);
+    final keyFile = File(keyFilePath);
+    await keyFile.writeAsBytes(keyFileData);
 
-    // Store the binary data into a file.
-    final directory = await getApplicationDocumentsDirectory();
-    final filePath = 'assets/passwords.bin'; // Binary file
-    final file = File(filePath);
-    await file.writeAsBytes(encryptedData);
+    final vaultFile = File(vaultFilePath);
+    await vaultFile.writeAsBytes(vaultFileData);
 
-    // Store configuration details in secure storage.
+    // Store configuration details (and the seed) in secure storage.
     final FlutterSecureStorage storage = FlutterSecureStorage();
-    await storage.write(key: 'hashed_password', value: hashedPassword);
-    await storage.write(key: 'encryption', value: selectedEncryption);
     await storage.write(key: 'hashing', value: selectedHashingAlgorithm);
-    await storage.write(key: 'password_file', value: filePath);
+    await storage.write(key: 'key_file', value: keyFilePath);
+    await storage.write(key: 'vault_file', value: vaultFilePath);
+    // Encode the seed in Base64 for storage.
+    await storage.write(key: 'seed', value: base64.encode(seed));
 
     setState(() {
       password = '';
       confirmPassword = '';
+      _passwordController.clear();
+      _confirmPasswordController.clear();
       passwordError = null;
     });
 
-    print('Configuration stored in secure storage and encrypted binary file.');
+    print('Key file stored at $keyFilePath');
+    print('Vault file stored at $vaultFilePath');
     widget.onConfigured(true);
   }
 
@@ -157,6 +197,9 @@ class _SetupScreenState extends State<SetupScreen> {
       } else {
         setState(() {
           passwordError = null;
+          // Clear the confirm field when moving to confirm step.
+          _confirmPasswordController.clear();
+          confirmPassword = '';
           _currentStep++;
         });
       }
@@ -182,7 +225,7 @@ class _SetupScreenState extends State<SetupScreen> {
     }
   }
 
-  /// Builds the content for the current step using the provided scale factor.
+  /// Builds the content for the current step.
   Widget _buildCurrentStepContent(double scale) {
     switch (_currentStep) {
       case 0:
@@ -244,16 +287,34 @@ class _SetupScreenState extends State<SetupScreen> {
                 style: TextStyle(color: Colors.white70, fontSize: 16 * scale)),
             SizedBox(height: 8 * scale),
             TextField(
-              obscureText: true,
+              controller: _passwordController,
+              obscureText: _obscurePassword,
               style: TextStyle(color: Colors.white, fontSize: 14 * scale),
               onChanged: (value) {
                 setState(() {
                   password = value;
                   passwordError = validatePassword(value);
+                  // Clear confirm field when password changes.
+                  _confirmPasswordController.clear();
+                  confirmPassword = '';
                 });
               },
-              decoration: _inputDecoration('Your password',
-                  errorText: passwordError, scale: scale),
+              decoration: _inputDecoration(
+                'Your password',
+                errorText: passwordError,
+                scale: scale,
+                suffixIcon: IconButton(
+                  icon: Icon(
+                    _obscurePassword ? Icons.visibility_off : Icons.visibility,
+                    color: Colors.white38,
+                  ),
+                  onPressed: () {
+                    setState(() {
+                      _obscurePassword = !_obscurePassword;
+                    });
+                  },
+                ),
+              ),
             ),
           ],
         );
@@ -265,14 +326,31 @@ class _SetupScreenState extends State<SetupScreen> {
                 style: TextStyle(color: Colors.white70, fontSize: 16 * scale)),
             SizedBox(height: 8 * scale),
             TextField(
-              obscureText: true,
+              controller: _confirmPasswordController,
+              obscureText: _obscureConfirmPassword,
               style: TextStyle(color: Colors.white, fontSize: 14 * scale),
               onChanged: (value) {
                 setState(() {
                   confirmPassword = value;
                 });
               },
-              decoration: _inputDecoration('Confirm password', scale: scale),
+              decoration: _inputDecoration(
+                'Confirm password',
+                scale: scale,
+                suffixIcon: IconButton(
+                  icon: Icon(
+                    _obscureConfirmPassword
+                        ? Icons.visibility_off
+                        : Icons.visibility,
+                    color: Colors.white38,
+                  ),
+                  onPressed: () {
+                    setState(() {
+                      _obscureConfirmPassword = !_obscureConfirmPassword;
+                    });
+                  },
+                ),
+              ),
             ),
             if (confirmPassword.isNotEmpty && password != confirmPassword)
               Padding(
@@ -289,31 +367,32 @@ class _SetupScreenState extends State<SetupScreen> {
   }
 
   @override
+  void dispose() {
+    // Dispose controllers.
+    _passwordController.dispose();
+    _confirmPasswordController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    // Compute a global scale factor for desktop based on screen width.
+    // Enforce a minimum screen size and adjust scale for larger screens.
     final screenWidth = MediaQuery.of(context).size.width;
     final screenHeight = MediaQuery.of(context).size.height;
-
-    // Ensure the screen size does not go below 1000x1000
     final double effectiveWidth = max(screenWidth, 1000);
     final double effectiveHeight = max(screenHeight, 1000);
-
-    final double scale = effectiveWidth / 1280; // baseline width: 1280
-    // Calculate card width: 50% of screen width up to a maximum (scales with screen size).
+    double scale = effectiveWidth / 1280;
+    if (effectiveWidth > 1600) {
+      scale = effectiveWidth /
+          1600; // reduce text size slightly on very large screens.
+    }
     final double cardWidth = min(effectiveWidth * 0.5, 800 * scale);
 
     return Scaffold(
-      // Full-screen background.
       body: Container(
         width: effectiveWidth,
         height: effectiveHeight,
-        color: const Color(0xFF424242).withAlpha((1 * 255).toInt()),
-        // decoration: BoxDecoration(
-        //   image: DecorationImage(
-        //     image: AssetImage('assets/one.gif'),
-        //     fit: BoxFit.cover,
-        //   ),
-        // ),
+        color: const Color(0xFF424242),
         child: Center(
           child: SingleChildScrollView(
             padding: EdgeInsets.all(24 * scale),
@@ -321,22 +400,18 @@ class _SetupScreenState extends State<SetupScreen> {
               width: cardWidth,
               padding: EdgeInsets.all(24 * scale),
               decoration: BoxDecoration(
-                color: const Color(0xFF424242).withAlpha((0.95 * 255).toInt()),
+                color: const Color(0xFF424242).withOpacity(0.95),
                 borderRadius: BorderRadius.circular(16 * scale),
                 boxShadow: [
-                  // Light shadow for top-left
                   BoxShadow(
-                    color: const Color.fromARGB(255, 139, 139,
-                        139), // Soft white shadow with some opacity
-                    offset: Offset(-5 * scale, -5 * scale), // Top-left offset
-                    blurRadius: 9 * scale, // Soft blur
+                    color: const Color.fromARGB(255, 139, 139, 139),
+                    offset: Offset(-5 * scale, -5 * scale),
+                    blurRadius: 9 * scale,
                   ),
-                  // Dark shadow for bottom-right
                   BoxShadow(
-                    color: const Color.fromARGB(
-                        255, 49, 49, 49), // Darker shadow with transparency
-                    offset: Offset(5 * scale, 5 * scale), // Bottom-right offset
-                    blurRadius: 9 * scale, // Soft blur
+                    color: const Color.fromARGB(255, 49, 49, 49),
+                    offset: Offset(5 * scale, 5 * scale),
+                    blurRadius: 9 * scale,
                   ),
                 ],
               ),
@@ -373,6 +448,7 @@ class _SetupScreenState extends State<SetupScreen> {
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.teal,
                           foregroundColor: Colors.white,
+                          minimumSize: Size(100 * scale, 40 * scale),
                         ),
                         onPressed: _handleNext,
                         child: Text(_currentStep == 3 ? 'Finish' : 'Next',

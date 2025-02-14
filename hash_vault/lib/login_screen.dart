@@ -1,9 +1,16 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
+import 'dart:typed_data';
+
 import 'package:crypto/crypto.dart';
+import 'package:encrypt/encrypt.dart' as encrypt;
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-import 'package:encrypt/encrypt.dart' as encrypt;
+import 'package:path_provider/path_provider.dart';
+
+import 'helper.dart'; // Assumes pbkdf2() is defined here.
+import 'vault_screen.dart'; // Import the VaultScreen class.
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -15,15 +22,9 @@ class LoginScreen extends StatefulWidget {
 class _LoginScreenState extends State<LoginScreen> {
   String password = '';
   String? passwordError;
-  String? storedEncryptedPassword;
-  String? selectedEncryption;
-  String? selectedHashingAlgorithm;
   bool _isLoading = false;
 
   final FlutterSecureStorage _storage = FlutterSecureStorage();
-
-  // Add your decryption key (this should be securely managed)
-  final String _decryptionKey = 'your_secure_key_here';
 
   /// Validates the entered password.
   String? validatePassword(String value) {
@@ -31,59 +32,81 @@ class _LoginScreenState extends State<LoginScreen> {
     return null;
   }
 
-  /// Decrypts the stored password using AES decryption.
-  String _decryptPassword(String encryptedPassword) {
-    final key =
-        encrypt.Key.fromUtf8(_decryptionKey.padRight(32, ' ')); // 32-byte key
-    final iv = encrypt.IV.fromLength(16); // 16-byte IV
-    final encrypter = encrypt.Encrypter(encrypt.AES(key));
-
-    // Perform decryption
-    final decrypted = encrypter.decrypt64(encryptedPassword, iv: iv);
-    return decrypted;
-  }
-
-  /// Handles login action.
+  /// Handles the login action.
   Future<void> _handleLogin() async {
     if (_isLoading) return;
     setState(() {
       _isLoading = true;
     });
 
-    // Validate password.
     final error = validatePassword(password);
     if (error != null) {
       setState(() {
         passwordError = error;
-      });
-      setState(() {
         _isLoading = false;
       });
       return;
     }
 
-    // Retrieve the encrypted password from secure storage.
-    storedEncryptedPassword = await _storage.read(key: 'encrypted_password');
-    selectedEncryption = await _storage.read(key: 'encryption');
-    selectedHashingAlgorithm = await _storage.read(key: 'hashing');
+    // Retrieve configuration details.
+    final keyFilePath = await _storage.read(key: 'key_file');
+    final vaultFilePath = await _storage.read(key: 'vault_file');
+    final selectedHashingAlgorithm = await _storage.read(key: 'hashing');
+    final seedStr = await _storage.read(key: 'seed');
 
-    if (storedEncryptedPassword == null ||
-        selectedEncryption == null ||
-        selectedHashingAlgorithm == null) {
+    if (keyFilePath == null ||
+        vaultFilePath == null ||
+        selectedHashingAlgorithm == null ||
+        seedStr == null) {
       setState(() {
         passwordError =
             'Configuration not found. Please set up the vault first.';
-      });
-      setState(() {
         _isLoading = false;
       });
       return;
     }
 
-    // Decrypt the stored password
-    String decryptedPassword = _decryptPassword(storedEncryptedPassword!);
+    // --- 1. Decrypt key.bin to verify the master password ---
+    final keyFile = File(keyFilePath);
+    if (!await keyFile.exists()) {
+      setState(() {
+        passwordError = 'Key file not found.';
+        _isLoading = false;
+      });
+      return;
+    }
+    final keyFileBytes = await keyFile.readAsBytes();
+    if (keyFileBytes.length < 16) {
+      setState(() {
+        passwordError = 'Key file is corrupted.';
+        _isLoading = false;
+      });
+      return;
+    }
+    // Extract IV (first 16 bytes) and encrypted hash.
+    final ivKey = encrypt.IV(keyFileBytes.sublist(0, 16));
+    final encryptedHashBytes = keyFileBytes.sublist(16);
 
-    // Hash the entered password
+    // Retrieve the seed (generated at setup) from secure storage.
+    final seed = base64.decode(seedStr);
+    final seedKey = encrypt.Key(seed);
+    final encrypterKey = encrypt.Encrypter(
+        encrypt.AES(seedKey, mode: encrypt.AESMode.cbc, padding: 'PKCS7'));
+
+    String storedHash;
+    try {
+      storedHash = encrypterKey
+          .decrypt(encrypt.Encrypted(encryptedHashBytes), iv: ivKey)
+          .trim();
+    } catch (e) {
+      setState(() {
+        passwordError = 'Failed to decrypt key file.';
+        _isLoading = false;
+      });
+      return;
+    }
+
+    // Compute the hash of the entered master password.
     final passwordBytes = utf8.encode(password);
     Digest digest;
     switch (selectedHashingAlgorithm) {
@@ -100,59 +123,133 @@ class _LoginScreenState extends State<LoginScreen> {
         digest = sha256.convert(passwordBytes);
         break;
     }
-    final String hashedPassword = digest.toString();
+    final computedHash = digest.toString();
 
-    // Check if the entered password hash matches the decrypted stored password
-    if (hashedPassword == decryptedPassword) {
-      setState(() {
-        _isLoading = false;
-      });
-      // Proceed to next screen after successful login.
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('Login successful!')));
-      // Navigate to the next screen
-    } else {
+    // Compare stored hash with computed hash.
+    if (storedHash != computedHash) {
       setState(() {
         passwordError = 'Incorrect password. Please try again.';
         _isLoading = false;
       });
+      return;
     }
+
+    // --- 2. Decrypt the vault.bin file ---
+    final vaultFile = File(vaultFilePath);
+    if (!await vaultFile.exists()) {
+      setState(() {
+        passwordError = 'Vault file not found.';
+        _isLoading = false;
+      });
+      return;
+    }
+    final vaultBytes = await vaultFile.readAsBytes();
+    if (vaultBytes.length < 32) {
+      setState(() {
+        passwordError = 'Vault file is corrupted.';
+        _isLoading = false;
+      });
+      return;
+    }
+    // Extract salt (first 16 bytes), IV (next 16 bytes), and encrypted vault data.
+    final vaultSalt = vaultBytes.sublist(0, 16);
+    final ivVault = encrypt.IV(vaultBytes.sublist(16, 32));
+    final encryptedVaultData = vaultBytes.sublist(32);
+
+    const int iterations = 10000;
+    const int keyLength = 32;
+    final vaultKeyBytes = pbkdf2(password, vaultSalt, iterations, keyLength);
+    final vaultKey = encrypt.Key(vaultKeyBytes);
+    final encrypterVault = encrypt.Encrypter(
+        encrypt.AES(vaultKey, mode: encrypt.AESMode.cbc, padding: 'PKCS7'));
+
+    String vaultJson;
+    try {
+      vaultJson = encrypterVault
+          .decrypt(encrypt.Encrypted(encryptedVaultData), iv: ivVault)
+          .trim();
+    } catch (e) {
+      setState(() {
+        passwordError = 'Failed to decrypt vault data.';
+        _isLoading = false;
+      });
+      return;
+    }
+
+    dynamic vaultData;
+    try {
+      vaultData = json.decode(vaultJson);
+    } catch (e) {
+      setState(() {
+        passwordError = 'Failed to parse vault data.';
+        _isLoading = false;
+      });
+      return;
+    }
+
+    setState(() {
+      _isLoading = false;
+    });
+    ScaffoldMessenger.of(context)
+        .showSnackBar(const SnackBar(content: Text('Login successful!')));
+    // Print the decrypted password data to the console.
+    // print("Decrypted vault data: ${vaultData['data']}");
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(
+        builder: (context) => VaultScreen(
+          entries: vaultData['data'] as List<dynamic>,
+          masterPassword: password,
+          vaultFilePath: vaultFilePath,
+          vaultSalt: vaultSalt,
+        ),
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
+    // Enforce minimum screen size and adjust scale for larger screens.
+    final screenWidth = MediaQuery.of(context).size.width;
+    final screenHeight = MediaQuery.of(context).size.height;
+    final double effectiveWidth = max(screenWidth, 1000);
+    final double effectiveHeight = max(screenHeight, 1000);
+    double scale = effectiveWidth / 1280;
+    if (effectiveWidth > 1600) {
+      scale = effectiveWidth / 1600;
+    }
+
     return Scaffold(
       body: Container(
         decoration: BoxDecoration(
-          image: DecorationImage(
-            image: AssetImage(
-                'assets/one.gif'), // Your GIF file should be in the assets folder
+          image: const DecorationImage(
+            image: AssetImage('assets/one.gif'),
             fit: BoxFit.cover,
           ),
         ),
         child: Center(
           child: Padding(
-            padding: const EdgeInsets.all(16.0),
+            padding: EdgeInsets.all(16 * scale),
             child: Card(
-              color: const Color(0xFF424242).withAlpha((0.95 * 255).toInt()),
+              color: const Color(0xFF424242).withOpacity(0.95),
               shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(16.0),
+                borderRadius: BorderRadius.circular(16 * scale),
               ),
               elevation: 8.0,
               child: Padding(
-                padding: const EdgeInsets.all(24.0),
+                padding: EdgeInsets.all(24 * scale),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    const Text(
+                    Text(
                       'Login to Your Vault',
                       style: TextStyle(
                         color: Colors.white,
-                        fontSize: 24,
+                        fontSize: 24 * scale,
                         fontWeight: FontWeight.bold,
                       ),
                     ),
-                    const SizedBox(height: 16),
+                    SizedBox(height: 16 * scale),
                     TextField(
                       obscureText: true,
                       onChanged: (value) {
@@ -161,37 +258,41 @@ class _LoginScreenState extends State<LoginScreen> {
                           passwordError = null;
                         });
                       },
-                      style: const TextStyle(color: Colors.white),
+                      style:
+                          TextStyle(color: Colors.white, fontSize: 14 * scale),
                       decoration: InputDecoration(
                         hintText: 'Enter Password',
                         errorText: passwordError,
                         filled: true,
                         fillColor: Colors.grey[900],
                         border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(8.0),
+                          borderRadius: BorderRadius.circular(8 * scale),
                         ),
                         focusedBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(8.0),
+                          borderRadius: BorderRadius.circular(8 * scale),
                           borderSide:
-                              const BorderSide(color: Colors.teal, width: 2.0),
+                              BorderSide(color: Colors.teal, width: 2 * scale),
                         ),
                       ),
                     ),
-                    const SizedBox(height: 16),
+                    SizedBox(height: 16 * scale),
                     _isLoading
-                        ? const CircularProgressIndicator(color: Colors.teal)
+                        ? CircularProgressIndicator(color: Colors.teal)
                         : ElevatedButton(
                             onPressed: _handleLogin,
                             style: ElevatedButton.styleFrom(
                               backgroundColor: Colors.teal,
+                              minimumSize: Size(100 * scale, 40 * scale),
                             ),
-                            child: const Text('Login'),
+                            child: Text('Login',
+                                style: TextStyle(fontSize: 14 * scale)),
                           ),
-                    const SizedBox(height: 16),
+                    SizedBox(height: 16 * scale),
                     if (passwordError != null)
                       Text(
                         passwordError!,
-                        style: const TextStyle(color: Colors.red, fontSize: 14),
+                        style:
+                            TextStyle(color: Colors.red, fontSize: 14 * scale),
                       ),
                   ],
                 ),

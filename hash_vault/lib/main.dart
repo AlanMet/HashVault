@@ -59,7 +59,7 @@ class _HomePageState extends State<HomePage> {
   @override
   void initState() {
     super.initState();
-    //_setConfig(false);
+    // _setConfig(false);
   }
 
   Future<void> _checkConfig() async {
