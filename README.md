@@ -3,6 +3,9 @@
 ## Overview
 This Flutter-based password manager provides a secure way to store and manage passwords. It includes a simple authentication system with password hashing and encryption, as well as features to ensure security and usability.
 
+![image](https://github.com/user-attachments/assets/328bb1ed-e5a5-4fe0-9b29-b15f88491473)
+
+
 ## Features
 - **Secure Authentication**: Users must enter a password to access their stored credentials. The password hash is encrypted and stored separately.
 - **Failed Attempt Handling**: After 10 failed login attempts, all stored data is deleted.
