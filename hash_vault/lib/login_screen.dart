@@ -34,8 +34,8 @@ class _LoginScreenState extends State<LoginScreen> {
 
   /// Validates if the configuration files exist and are correct.
   Future<void> _validateConfig() async {
-    final keyFile = File('assets/key.bin');
-    final vaultFile = File('assets/vault.bin');
+    final keyFile = File('key.bin');
+    final vaultFile = File('vault.bin');
 
     if (!await keyFile.exists() || !await vaultFile.exists()) {
       returnToMain();
