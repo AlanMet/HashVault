@@ -149,8 +149,8 @@ class _SetupScreenState extends State<SetupScreen> {
 
     // --- 5. Save files and configuration ---
     // (For testing purposes, we're saving to assets folder; adjust paths as needed.)
-    final keyFilePath = 'assets/key.bin';
-    final vaultFilePath = 'assets/vault.bin';
+    final keyFilePath = 'key.bin';
+    final vaultFilePath = 'vault.bin';
 
     final keyFile = File(keyFilePath);
     await keyFile.writeAsBytes(keyFileData);
